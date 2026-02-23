@@ -51,14 +51,15 @@ QUALITY_PRESETS: list[QualityPreset] = [
 ]
 
 
-def _fetch_ollama_models(ollama_url: str) -> list[str]:
-    url = f"{ollama_url.rstrip('/')}/api/tags"
+def _fetch_llm_models(llm_url: str) -> list[str]:
+    """Fetch available models from LM Studio."""
+    url = f"{llm_url.rstrip('/')}/v1/models"
     try:
         response = httpx.get(url, timeout=8.0)
         response.raise_for_status()
         payload = response.json()
-        models = payload.get("models", [])
-        names = [str(item.get("name", "")).strip() for item in models if str(item.get("name", "")).strip()]
+        models = payload.get("data", [])
+        names = [str(item.get("id", "")).strip() for item in models if str(item.get("id", "")).strip()]
         return sorted(set(names))
     except Exception:
         return []
@@ -114,18 +115,18 @@ def _ask_pdf_selection(console: Console, pdfs: list[Path]) -> list[Path]:
         return [pdfs[index - 1] for index in indexes]
 
 
-def _ask_model(console: Console, ollama_url: str) -> str:
-    discovered = _fetch_ollama_models(ollama_url)
-    default_model = "qwen3-vl:8b"
+def _ask_model(console: Console, llm_url: str) -> str:
+    discovered = _fetch_llm_models(llm_url)
+    default_model = ""
 
     if discovered:
-        table = Table(title="Detected Ollama Models")
+        table = Table(title="Detected LM Studio Models")
         table.add_column("#", justify="right")
         table.add_column("Model")
         for index, model in enumerate(discovered, start=1):
             table.add_row(str(index), model)
         console.print(table)
-        console.print("Pick a model number or enter a custom model name.")
+        console.print("Pick a model number or enter a custom model name (leave empty for default).")
 
         raw = Prompt.ask("Model", default=discovered[0]).strip()
         if raw.isdigit():
@@ -134,7 +135,7 @@ def _ask_model(console: Console, ollama_url: str) -> str:
                 return discovered[model_index - 1]
         return raw or discovered[0]
 
-    console.print("[yellow]Could not fetch model list from Ollama; enter model manually.[/yellow]")
+    console.print("[yellow]Could not fetch model list from LM Studio; enter model manually (leave empty for default).[/yellow]")
     return Prompt.ask("Model", default=default_model).strip() or default_model
 
 
@@ -169,7 +170,7 @@ def _ask_quality_preset(console: Console) -> QualityPreset:
 def _build_argv(
     selected_pdfs: Iterable[Path],
     model: str,
-    ollama_url: str,
+    llm_url: str,
     preset: QualityPreset,
     min_native_chars: int,
     output_dir: str,
@@ -179,8 +180,8 @@ def _build_argv(
     args: list[str] = [
         "--model",
         model,
-        "--ollama-url",
-        ollama_url,
+        "--llm-url",
+        llm_url,
         "--dpi",
         str(preset.dpi),
         "--workers",
@@ -218,8 +219,8 @@ def main() -> int:
     console.print("[bold cyan]PDF OCR Markdown - Interactive TUI[/bold cyan]")
     selected_pdfs = _ask_pdf_selection(console, pdfs)
 
-    ollama_url = Prompt.ask("Ollama URL", default="http://localhost:11434").strip() or "http://localhost:11434"
-    model = _ask_model(console, ollama_url)
+    llm_url = Prompt.ask("LM Studio URL", default="http://localhost:1234").strip() or "http://localhost:1234"
+    model = _ask_model(console, llm_url)
     preset = _ask_quality_preset(console)
 
     min_native_chars = IntPrompt.ask("Native-text threshold", default=80)
@@ -231,7 +232,7 @@ def main() -> int:
     args = _build_argv(
         selected_pdfs=selected_pdfs,
         model=model,
-        ollama_url=ollama_url,
+        llm_url=llm_url,
         preset=preset,
         min_native_chars=min_native_chars,
         output_dir=output_dir,

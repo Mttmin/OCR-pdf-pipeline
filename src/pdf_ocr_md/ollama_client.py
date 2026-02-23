@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import httpx
 
 
-class OllamaError(RuntimeError):
+class LLMError(RuntimeError):
     pass
 
 
@@ -22,7 +22,9 @@ class OCRResponse:
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
-class OllamaClient:
+class LLMClient:
+    """Client for LM Studio's OpenAI-compatible API."""
+
     def __init__(self, base_url: str, model: str, timeout_seconds: float = 240.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -38,29 +40,27 @@ class OllamaClient:
         except json.JSONDecodeError:
             match = _JSON_RE.search(text)
             if not match:
-                raise OllamaError("Model response was not valid JSON")
+                raise LLMError("Model response was not valid JSON")
             return json.loads(match.group(0))
 
     def _chat(self, messages: list[dict]) -> str:
-        url = f"{self.base_url}/api/chat"
+        url = f"{self.base_url}/v1/chat/completions"
         payload = {
             "model": self.model,
             "messages": messages,
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": 0.0,
-            },
+            "temperature": 0.0,
         }
         response = self._client.post(url, json=payload)
         if response.status_code >= 400:
-            raise OllamaError(f"Ollama call failed ({response.status_code}): {response.text}")
+            raise LLMError(f"LLM call failed ({response.status_code}): {response.text}")
 
         data = response.json()
-        message = data.get("message", {})
-        content = message.get("content", "")
+        choices = data.get("choices", [])
+        if not choices:
+            raise LLMError("LLM returned no choices")
+        content = choices[0].get("message", {}).get("content", "")
         if not content:
-            raise OllamaError("Ollama returned empty content")
+            raise LLMError("LLM returned empty content")
         return content
 
     def analyze_page(
@@ -97,8 +97,13 @@ class OllamaClient:
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
-                    "content": user_prompt,
-                    "images": [image_b64],
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                        },
+                    ],
                 },
             ]
         )
@@ -136,22 +141,13 @@ class OllamaClient:
             f"{joined}"
         )
 
-        url = f"{self.base_url}/api/chat"
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.1,
-            },
-        }
-        response = self._client.post(url, json=payload)
-        if response.status_code >= 400:
-            raise OllamaError(f"Ollama aggregate call failed ({response.status_code}): {response.text}")
+        content = self._chat([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ])
+        return content.strip()
 
-        data = response.json()
-        message = data.get("message", {})
-        return str(message.get("content", "")).strip()
+
+# Backward compatibility aliases
+OllamaClient = LLMClient
+OllamaError = LLMError

@@ -8,7 +8,7 @@ import shutil
 import sys
 
 from .discovery import find_root_pdfs
-from .ollama_client import OllamaClient, OllamaError
+from .ollama_client import LLMClient, LLMError
 from .pdf_extract import PagePayload, extract_page_payloads, get_pdf_page_count, is_native_text_usable
 from .smart_trigger import should_call_vision_ocr
 from .tui import OcrPipelineTui
@@ -31,11 +31,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "and write one clean markdown file per PDF."
         ),
     )
-    parser.add_argument("--model", default="qwen3-vl:8b", help="Ollama model name")
+    parser.add_argument("--model", default="", help="Model name (leave empty for LM Studio default)")
     parser.add_argument(
-        "--ollama-url",
-        default="http://localhost:11434",
-        help="Base URL for Ollama server",
+        "--llm-url",
+        default="http://localhost:1234",
+        help="Base URL for LM Studio server",
     )
     parser.add_argument(
         "--dpi",
@@ -327,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"Warning: could not pre-count slides in {pdf_file.name}: {exc}", file=sys.stderr)
 
-    client = OllamaClient(base_url=args.ollama_url, model=args.model)
+    client = LLMClient(base_url=args.llm_url, model=args.model)
     exit_code = 0
     documents_succeeded = 0
     slides_succeeded = 0
@@ -364,8 +364,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  ! Failed {pdf_file.name}: {exc}", file=sys.stderr)
                 finally:
                     tui.finish_document()
-    except OllamaError as exc:
-        print(f"Ollama error: {exc}", file=sys.stderr)
+    except LLMError as exc:
+        print(f"LLM error: {exc}", file=sys.stderr)
         return 2
     finally:
         client.close()
