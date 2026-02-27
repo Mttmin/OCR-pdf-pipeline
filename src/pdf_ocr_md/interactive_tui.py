@@ -135,7 +135,7 @@ def _ask_model(console: Console, llm_url: str) -> str:
                 return discovered[model_index - 1]
         return raw or discovered[0]
 
-    console.print("[yellow]Could not fetch model list from LM Studio; enter model manually (leave empty for default).[/yellow]")
+    console.print("[yellow]Could not fetch model list; enter model manually. Some backends require this field.[/yellow]")
     return Prompt.ask("Model", default=default_model).strip() or default_model
 
 
@@ -176,6 +176,9 @@ def _build_argv(
     output_dir: str,
     no_tui_progress: bool,
     dry_run: bool,
+    launch_if_offline: str,
+    request_timeout_seconds: float,
+    page_timeout_seconds: float,
 ) -> list[str]:
     args: list[str] = [
         "--model",
@@ -190,6 +193,12 @@ def _build_argv(
         str(min_native_chars),
         "--output-dir",
         output_dir,
+        "--launch-if-offline",
+        launch_if_offline,
+        "--request-timeout-seconds",
+        str(request_timeout_seconds),
+        "--page-timeout-seconds",
+        str(page_timeout_seconds),
     ]
 
     if preset.native_fast_path:
@@ -224,8 +233,11 @@ def main() -> int:
     preset = _ask_quality_preset(console)
 
     min_native_chars = IntPrompt.ask("Native-text threshold", default=80)
+    request_timeout_seconds = float(IntPrompt.ask("Per-request timeout (seconds)", default=240))
+    page_timeout_seconds = float(IntPrompt.ask("Per-page hard timeout (seconds)", default=300))
     output_dir = Prompt.ask("Markdown output folder", default="markdown").strip() or "markdown"
     dry_run = Confirm.ask("Dry run only?", default=False)
+    launch_if_offline = "y" if Confirm.ask("Auto-launch local Ollama if backend is offline?", default=True) else "n"
 
     show_progress_slider = Confirm.ask("Show OCR queue slider during run?", default=True)
 
@@ -238,6 +250,9 @@ def main() -> int:
         output_dir=output_dir,
         no_tui_progress=(not show_progress_slider),
         dry_run=dry_run,
+        launch_if_offline=launch_if_offline,
+        request_timeout_seconds=request_timeout_seconds,
+        page_timeout_seconds=page_timeout_seconds,
     )
 
     console.print("\n[bold green]Starting pipeline...[/bold green]")

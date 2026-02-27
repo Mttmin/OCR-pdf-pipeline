@@ -3,7 +3,11 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
+import time
+from urllib.parse import urlparse
 
 import httpx
 
@@ -32,6 +36,133 @@ class LLMClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def list_available_models(self, timeout_seconds: float = 3.0) -> list[str]:
+        base = self.base_url.rstrip("/")
+        candidates: list[str] = []
+
+        try:
+            response = httpx.get(f"{base}/v1/models", timeout=timeout_seconds)
+            if response.status_code < 500:
+                payload = response.json()
+                data = payload.get("data", []) if isinstance(payload, dict) else []
+                for item in data:
+                    if isinstance(item, dict):
+                        model_id = str(item.get("id", "")).strip()
+                        if model_id:
+                            candidates.append(model_id)
+        except Exception:
+            pass
+
+        try:
+            response = httpx.get(f"{base}/api/tags", timeout=timeout_seconds)
+            if response.status_code < 500:
+                payload = response.json()
+                models = payload.get("models", []) if isinstance(payload, dict) else []
+                for item in models:
+                    if isinstance(item, dict):
+                        model_name = str(item.get("name", "")).strip()
+                        if model_name:
+                            candidates.append(model_name)
+        except Exception:
+            pass
+
+        return sorted(set(candidates))
+
+    def _preferred_model(self, models: list[str]) -> str | None:
+        if not models:
+            return None
+
+        scored: list[tuple[int, str]] = []
+        for model in models:
+            normalized = model.lower().replace("-", "").replace("_", "").replace(" ", "")
+            score = 0
+
+            if "qwen" in normalized:
+                score += 40
+            if "vl" in normalized:
+                score += 35
+            if "3" in normalized:
+                score += 20
+            if "8b" in normalized:
+                score += 30
+
+            if "qwen" in normalized and "vl" in normalized and "8b" in normalized:
+                score += 25
+
+            scored.append((score, model))
+
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        best_score, best_model = scored[0]
+        if best_score <= 0:
+            return None
+        return best_model
+
+    def ensure_model_selected(self) -> tuple[bool, str | None]:
+        if self.model.strip():
+            return True, None
+
+        available = self.list_available_models()
+        if not available:
+            return False, "No model configured and no models discovered from backend"
+
+        preferred = self._preferred_model(available)
+        self.model = preferred if preferred else available[0]
+        return True, self.model
+
+    def is_server_online(self, timeout_seconds: float = 1.5) -> tuple[bool, str | None]:
+        base = self.base_url.rstrip("/")
+        probe_urls = [f"{base}/v1/models", f"{base}/api/tags"]
+        last_error: str | None = None
+
+        for probe_url in probe_urls:
+            try:
+                response = httpx.get(probe_url, timeout=timeout_seconds)
+                if response.status_code < 500:
+                    return True, None
+            except Exception as exc:
+                last_error = str(exc)
+                continue
+
+        return False, last_error or "server probe failed"
+
+    def _is_likely_local_ollama_endpoint(self) -> bool:
+        parsed = urlparse(self.base_url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+        if host not in {"127.0.0.1", "localhost"}:
+            return False
+        return port in {None, 11434}
+
+    def launch_local_server(self, wait_seconds: float = 12.0) -> tuple[bool, str | None]:
+        if not self._is_likely_local_ollama_endpoint():
+            return (
+                False,
+                "Auto-launch is only supported for local Ollama endpoints "
+                "(http://localhost:11434). Start your configured backend manually.",
+            )
+
+        if shutil.which("ollama") is None:
+            return False, "Could not find 'ollama' in PATH."
+
+        try:
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            return False, f"Failed to start 'ollama serve': {exc}"
+
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while time.monotonic() < deadline:
+            online, _ = self.is_server_online(timeout_seconds=1.0)
+            if online:
+                return True, None
+            time.sleep(0.4)
+
+        return False, f"Ollama did not become ready within {wait_seconds:.0f}s."
 
     def _extract_json(self, text: str) -> dict:
         text = text.strip()

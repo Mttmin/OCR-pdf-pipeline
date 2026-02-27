@@ -16,6 +16,13 @@ class PagePayload:
     image_png: bytes
 
 
+@dataclass(slots=True)
+class PageTextPayload:
+    page_number: int
+    total_pages: int
+    native_text: str
+
+
 def _extract_native_text(pdf_path: Path) -> list[str]:
     reader = PdfReader(str(pdf_path))
     texts: list[str] = []
@@ -42,6 +49,51 @@ def _render_pages_to_png(pdf_path: Path, dpi: int) -> list[bytes]:
         doc.close()
 
     return images
+
+
+def render_selected_pages_to_png(pdf_path: Path, page_numbers: list[int], dpi: int = 180) -> dict[int, bytes]:
+    if not page_numbers:
+        return {}
+
+    unique_pages = sorted(set(page_numbers))
+    doc = pdfium.PdfDocument(str(pdf_path))
+    scale = max(1, round(dpi / 72))
+    images: dict[int, bytes] = {}
+
+    try:
+        total_pages = len(doc)
+        for page_number in unique_pages:
+            page_index = page_number - 1
+            if page_index < 0 or page_index >= total_pages:
+                raise RuntimeError(
+                    f"Invalid page number {page_number} for {pdf_path.name} with {total_pages} pages"
+                )
+
+            page = doc[page_index]
+            bitmap = page.render(scale=scale)
+            pil_image = bitmap.to_pil()
+            buffer = BytesIO()
+            pil_image.save(buffer, format="PNG")
+            images[page_number] = buffer.getvalue()
+    finally:
+        doc.close()
+
+    return images
+
+
+def extract_page_text_payloads(pdf_path: Path) -> list[PageTextPayload]:
+    native_texts = _extract_native_text(pdf_path)
+    total_pages = len(native_texts)
+    payloads: list[PageTextPayload] = []
+    for index, text in enumerate(native_texts, start=1):
+        payloads.append(
+            PageTextPayload(
+                page_number=index,
+                total_pages=total_pages,
+                native_text=text,
+            )
+        )
+    return payloads
 
 
 def extract_page_payloads(pdf_path: Path, dpi: int = 180) -> list[PagePayload]:

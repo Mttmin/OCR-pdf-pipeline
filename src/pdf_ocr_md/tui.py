@@ -84,6 +84,23 @@ class OcrPipelineTui:
             left=total_slides,
         )
 
+    def extend_global_slides(self, additional_slides: int) -> None:
+        if not self.enabled or self.progress is None or self._global_slides_task_id is None:
+            return
+        if additional_slides <= 0:
+            return
+
+        task = self.progress.tasks[self._global_slides_task_id]
+        queued = int(task.fields.get("queued", 0)) + additional_slides
+        done = int(task.fields.get("done", 0))
+        left = max(queued - done, 0)
+        self.progress.update(
+            self._global_slides_task_id,
+            total=max(1, queued),
+            queued=queued,
+            left=left,
+        )
+
     def advance_global_slides(self, step: int = 1) -> None:
         if not self.enabled or self.progress is None or self._global_slides_task_id is None:
             return

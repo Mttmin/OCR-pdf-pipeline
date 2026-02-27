@@ -33,23 +33,40 @@ def normalize_math_entries(entries: list[str]) -> list[str]:
 def build_page_markdown(analysis: PageAnalysis) -> str:
     text_block = _normalize_multiline(analysis.retranscribed_text) or "(No text detected)"
     math_entries = normalize_math_entries(analysis.math_markdown)
-    image_entries = [d.strip() for d in analysis.image_descriptions if d.strip()]
+    image_entries = [d.strip() for d in analysis.image_descriptions if d.strip() and not d.strip().startswith("Used native")]
 
-    parts: list[str] = [f"## Slide {analysis.page_number}"]
-    parts.append("### Retranscribed Text")
-    parts.append(text_block)
+    parts: list[str] = []
+    
+    # Extract potential title from first line of text
+    text_lines = text_block.split('\n')
+    first_line = text_lines[0].strip() if text_lines else ""
+    
+    # Use first line as title if it's reasonably short and looks like a title
+    title = None
+    remaining_text = text_block
+    if first_line and len(first_line) < 100 and not first_line.startswith("-") and not first_line.startswith("●"):
+        # Check if first line doesn't look like regular paragraph text (e.g., has formatting or is short)
+        if len(first_line) < 60 or first_line.isupper() or "**" in first_line or any(c.isupper() for c in first_line[:3]):
+            title = first_line
+            remaining_text = "\n".join(text_lines[1:]).strip()
+    
+    # Only add title header if we have one
+    if title:
+        parts.append(f"## {title}")
+    
+    # Add main text content (skip if it's the same as title)
+    if remaining_text and remaining_text != first_line:
+        parts.append(remaining_text)
+    elif not title and text_block:
+        parts.append(text_block)
 
-    parts.append("### Math")
+    # Only add Math section if we have math content
     if math_entries:
         parts.extend(math_entries)
-    else:
-        parts.append("(No explicit math content detected)")
 
-    parts.append("### Images")
+    # Only add Images section if we have meaningful image descriptions
     if image_entries:
         parts.extend([f"- {item}" for item in image_entries])
-    else:
-        parts.append("- (No meaningful image content detected)")
 
     return "\n\n".join(parts).strip()
 

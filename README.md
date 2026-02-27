@@ -58,9 +58,13 @@ Useful flags:
 - `--dry-run`: list/discover processing targets without calling the LLM
 - `--pdf <name.pdf>`: process only selected PDF(s); repeat for multiple files
 - `--workers <n>`: parallel page OCR requests per PDF (default: `2`)
+- `--request-timeout-seconds <n>`: timeout for each LLM HTTP request (default: `240`)
+- `--page-timeout-seconds <n>`: hard timeout per page task in OCR batches (default: `300`)
 - `--native-fast-path`: only call the LLM when weak native text, math, or likely diagrams are detected
 - `--skip-aggregate-cleanup`: skip the final whole-document rewrite call for speed
 - `--no-tui`: disable the OCR queue progress slider in terminal
+- `--launch-if-offline y|n`: if backend is offline, auto-launch local Ollama when possible (`y`) or fail fast (`n`, default)
+  - If your configured URL is offline and `y` is used, the tool will also try local Ollama fallback at `http://localhost:11434`.
 
 ## Output
 
@@ -74,6 +78,8 @@ If a name collision exists, a suffix like `-1` is appended.
 - Root-only scan is non-recursive by design.
 - OCR quality depends on model quality and page render DPI.
 - Math is requested from the model in LaTeX-ready markdown format.
+- When the backend endpoint is unreachable, the tool now emits a single summary error instead of per-slide connection spam.
+- The typo flag `--lauch-if-offline` is accepted as a compatibility alias for `--launch-if-offline`.
 
 ## Speed tips
 
