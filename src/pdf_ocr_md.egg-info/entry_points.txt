@@ -1,0 +1,3 @@
+[console_scripts]
+pdf-ocr-md = pdf_ocr_md.main:main
+pdf-ocr-md-tui = pdf_ocr_md.interactive_tui:main
