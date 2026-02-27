@@ -1,15 +1,15 @@
 Metadata-Version: 2.4
 Name: pdf-ocr-md
-Version: 0.2.0
+Version: 0.1.0
 Summary: OCR PDFs with Ollama and generate clean markdown outputs
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 License-File: LICENSE
 Requires-Dist: httpx>=0.27.0
-Requires-Dist: pypdf>=5.0.0
-Requires-Dist: pypdfium2>=4.30.0
-Requires-Dist: Pillow>=10.0.0
-Requires-Dist: rich>=13.0.0
+Requires-Dist: pypdf>=6.7.4
+Requires-Dist: pypdfium2>=5.5.0
+Requires-Dist: Pillow>=12.1.1
+Requires-Dist: rich>=14.3.3
 Dynamic: license-file
 
 # pdf-ocr-md

@@ -10,13 +10,16 @@ _MATH_PATTERNS = [
     re.compile(r"\$[^$]+\$"),
     re.compile(r"\b(sum|prod|lim|sin|cos|tan|log|ln|sqrt|frac|integral|derivative)\b", re.IGNORECASE),
     re.compile(r"[=≈≠≤≥∑∫∞√α-ωΑ-Ω]"),
-    re.compile(r"\b\w+\s*=\s*[^\n]+"),
 ]
 
 _DIAGRAM_KEYWORDS = re.compile(
-    r"\b(figure|diagram|chart|graph|plot|table|workflow|architecture|pipeline|schema|illustration|photo|image)\b",
+    r"\b(figure|diagram|chart|graph|plot|workflow|architecture|pipeline|schema|illustration|photo|image)\b",
     re.IGNORECASE,
 )
+
+# "table" is checked separately: it routes to visual check rather than directly to
+# OCR, because many slides merely *mention* a table without containing one.
+_TABLE_KEYWORD = re.compile(r"\btable\b", re.IGNORECASE)
 
 
 def has_math_indicators(text: str) -> bool:
@@ -29,6 +32,12 @@ def has_diagram_keywords(text: str) -> bool:
     if not text.strip():
         return False
     return _DIAGRAM_KEYWORDS.search(text) is not None
+
+
+def has_table_keyword(text: str) -> bool:
+    if not text.strip():
+        return False
+    return _TABLE_KEYWORD.search(text) is not None
 
 
 def has_visual_structure(image_png: bytes) -> bool:

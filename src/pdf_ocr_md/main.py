@@ -12,7 +12,7 @@ import time
 from .discovery import find_root_pdfs
 from .ollama_client import LLMClient, LLMError
 from .pdf_extract import PagePayload, PageTextPayload, extract_page_text_payloads, is_native_text_usable, render_selected_pages_to_png
-from .smart_trigger import has_diagram_keywords, has_math_indicators, should_call_vision_ocr
+from .smart_trigger import has_diagram_keywords, has_math_indicators, has_table_keyword, should_call_vision_ocr
 from .tui import OcrPipelineTui
 from .transform import PageAnalysis
 from .writer import write_document_markdown
@@ -143,7 +143,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--page-timeout-seconds",
         type=float,
-        default=300.0,
+        default=180.0,
         help="Hard wall-clock timeout per page task in OCR batches",
     )
     parser.add_argument(
@@ -297,15 +297,25 @@ def process_pdf(
 
         executor = ThreadPoolExecutor(max_workers=max_workers)
         try:
-            future_map = {executor.submit(_analyze_payload, payload): payload for payload in batch}
-            started_at = {future: time.perf_counter() for future in future_map}
-            pending = set(future_map)
+            # Sliding window
+            pending_payloads = list(batch)
+            # active maps future → (payload, start_time)
+            active: dict = {}
 
-            while pending:
-                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            def _submit_next() -> None:
+                if pending_payloads:
+                    p = pending_payloads.pop(0)
+                    f = executor.submit(_analyze_payload, p)
+                    active[f] = (p, time.perf_counter())
+
+            for _ in range(min(max_workers, len(pending_payloads))):
+                _submit_next()
+
+            while active:
+                done, _ = wait(list(active), timeout=0.5, return_when=FIRST_COMPLETED)
 
                 for future in done:
-                    payload = future_map[future]
+                    payload, _ = active.pop(future)
                     try:
                         analysis, elapsed = future.result()
                         ocr_seconds_total += elapsed
@@ -321,25 +331,25 @@ def process_pdf(
                         else:
                             reason = "retry failed" if is_retry else "failed (will retry later)"
                             print(f"  ! Slide {payload.page_number}/{payload.total_pages} {reason}: {exc}", file=sys.stderr)
+                    # Open up a slot for the next pending task
+                    _submit_next()
 
                 now = time.perf_counter()
-                expired = [
-                    future for future in pending
-                    if now - started_at[future] > max(1.0, page_timeout_seconds)
-                ]
-                for future in expired:
-                    pending.remove(future)
-                    payload = future_map[future]
-                    future.cancel()
-                    timeout_exc = TimeoutError(
-                        f"Page processing exceeded {page_timeout_seconds:.1f}s"
-                    )
-                    failures.append((payload, timeout_exc))
-                    reason = "retry timed out" if is_retry else "timed out (will retry later)"
-                    print(
-                        f"  ! Slide {payload.page_number}/{payload.total_pages} {reason}: {timeout_exc}",
-                        file=sys.stderr,
-                    )
+                for future, (payload, start_time) in list(active.items()):
+                    if now - start_time > max(1.0, page_timeout_seconds):
+                        active.pop(future)
+                        future.cancel()
+                        timeout_exc = TimeoutError(
+                            f"Page processing exceeded {page_timeout_seconds:.1f}s"
+                        )
+                        failures.append((payload, timeout_exc))
+                        reason = "retry timed out" if is_retry else "timed out (will retry later)"
+                        print(
+                            f"  ! Slide {payload.page_number}/{payload.total_pages} {reason}: {timeout_exc}",
+                            file=sys.stderr,
+                        )
+                        # Slot freed by timeout — submit next pending task
+                        _submit_next()
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
@@ -375,6 +385,10 @@ def process_pdf(
                 needs_ocr_text_payloads.append(payload)
                 if tui is None:
                     print(f"  - Slide {payload.page_number}/{payload.total_pages} queued for OCR (diagram_keyword_detected)")
+            elif has_table_keyword(compact) and native_len < 450:
+                # slides with an actual grid/table image will be caught by
+                # has_visual_structure() in the visual check stage.
+                needs_visual_check.append(payload)
             elif native_len >= 450:
                 native_fast_path_pages.append((payload, "native_text_only"))
             else:
@@ -382,13 +396,27 @@ def process_pdf(
         else:
             needs_ocr_text_payloads.append(payload)
 
+    # Route render uses a lower DPI — enough for the visual-structure heuristic
+    # but ~4× cheaper than the full OCR render. Pages that skip OCR pay only
+    # this cheap render cost; pages that need OCR get a full-quality re-render.
+    route_dpi = max(90, dpi // 2)
+    # Cache of full-quality images built during route render so pages that go
+    # through visual check AND need OCR can be reused without a second render.
+    route_full_images: dict[int, bytes] = {}
+
     if needs_visual_check:
         route_render_start = time.perf_counter()
+        # If route_dpi equals ocr dpi (e.g. user set very low dpi), render once
+        # at full quality and reuse for OCR — avoids the duplicate render entirely.
+        use_full_for_route = route_dpi >= dpi
+        effective_route_dpi = dpi if use_full_for_route else route_dpi
         route_images = render_selected_pages_to_png(
             pdf_path=pdf_path,
             page_numbers=[payload.page_number for payload in needs_visual_check],
-            dpi=dpi,
+            dpi=effective_route_dpi,
         )
+        if use_full_for_route:
+            route_full_images = route_images
         render_for_route_seconds = time.perf_counter() - route_render_start
 
         for payload in needs_visual_check:
@@ -408,11 +436,17 @@ def process_pdf(
                 native_fast_path_pages.append((payload, reason))
 
     render_for_ocr_start = time.perf_counter()
-    ocr_images = render_selected_pages_to_png(
+    # Pages already rendered at full quality during route phase can be reused.
+    pages_needing_fresh_render = [
+        payload for payload in needs_ocr_text_payloads
+        if payload.page_number not in route_full_images
+    ]
+    fresh_ocr_images = render_selected_pages_to_png(
         pdf_path=pdf_path,
-        page_numbers=[payload.page_number for payload in needs_ocr_text_payloads],
+        page_numbers=[payload.page_number for payload in pages_needing_fresh_render],
         dpi=dpi,
     )
+    ocr_images = {**route_full_images, **fresh_ocr_images}
     render_for_ocr_seconds = time.perf_counter() - render_for_ocr_start if needs_ocr_text_payloads else 0.0
 
     needs_ocr: list[PagePayload] = []
@@ -544,6 +578,11 @@ def process_pdf(
         )
 
     analyses = [analyses_by_page[page_number] for page_number in sorted(analyses_by_page)]
+
+    # Auto-skip cleanup when no slides went through OCR at all — the cleanup
+    # LLM pass is only useful for normalizing OCR-introduced inconsistencies.
+    if not skip_aggregate_cleanup and len(needs_ocr) == 0:
+        skip_aggregate_cleanup = True
 
     if skip_aggregate_cleanup:
         cleaned_aggregate = None

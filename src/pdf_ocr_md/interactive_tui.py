@@ -36,7 +36,7 @@ QUALITY_PRESETS: list[QualityPreset] = [
         key="2",
         label="Balanced (recommended)",
         dpi=180,
-        workers=2,
+        workers=1,
         native_fast_path=True,
         skip_aggregate_cleanup=False,
     ),
@@ -234,7 +234,7 @@ def main() -> int:
 
     min_native_chars = IntPrompt.ask("Native-text threshold", default=80)
     request_timeout_seconds = float(IntPrompt.ask("Per-request timeout (seconds)", default=240))
-    page_timeout_seconds = float(IntPrompt.ask("Per-page hard timeout (seconds)", default=300))
+    page_timeout_seconds = float(IntPrompt.ask("Per-page hard timeout (seconds)", default=180))
     output_dir = Prompt.ask("Markdown output folder", default="markdown").strip() or "markdown"
     dry_run = Confirm.ask("Dry run only?", default=False)
     launch_if_offline = "y" if Confirm.ask("Auto-launch local Ollama if backend is offline?", default=True) else "n"
