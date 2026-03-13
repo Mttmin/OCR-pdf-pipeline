@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: pdf-ocr-md
-Version: 0.1.0
+Version: 0.2.0
 Summary: OCR PDFs with Ollama and generate clean markdown outputs
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown

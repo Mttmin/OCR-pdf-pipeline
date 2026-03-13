@@ -174,12 +174,13 @@ class LLMClient:
                 raise LLMError("Model response was not valid JSON")
             return json.loads(match.group(0))
 
-    def _chat(self, messages: list[dict]) -> str:
+    def _chat(self, messages: list[dict], max_tokens: int = 1200) -> str:
         url = f"{self.base_url}/v1/chat/completions"
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": 0.0,
+            "max_tokens": max_tokens,
         }
         response = self._client.post(url, json=payload)
         if response.status_code >= 400:
@@ -202,6 +203,7 @@ class LLMClient:
         native_text: str,
     ) -> OCRResponse:
         image_b64 = base64.b64encode(image_png).decode("ascii")
+        mime = "image/jpeg" if image_png[:3] == b"\xff\xd8\xff" else "image/png"
 
         system_prompt = (
             "You are an OCR and document-transcription assistant. "
@@ -232,7 +234,7 @@ class LLMClient:
                         {"type": "text", "text": user_prompt},
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                            "image_url": {"url": f"data:{mime};base64,{image_b64}"},
                         },
                     ],
                 },
@@ -272,10 +274,13 @@ class LLMClient:
             f"{joined}"
         )
 
-        content = self._chat([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ])
+        content = self._chat(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=4096,
+        )
         return content.strip()
 
 

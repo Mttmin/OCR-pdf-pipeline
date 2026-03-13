@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
+from PIL import Image
 from pypdf import PdfReader
 import pypdfium2 as pdfium
 
@@ -23,6 +24,25 @@ class PageTextPayload:
     native_text: str
 
 
+def _encode_pil_image(
+    pil_image: Image.Image,
+    *,
+    max_image_dim: int = 0,
+    use_jpeg: bool = False,
+) -> bytes:
+    if max_image_dim > 0:
+        w, h = pil_image.size
+        if w > max_image_dim or h > max_image_dim:
+            pil_image.thumbnail((max_image_dim, max_image_dim), Image.LANCZOS)
+    buffer = BytesIO()
+    if use_jpeg:
+        pil_image = pil_image.convert("RGB")
+        pil_image.save(buffer, format="JPEG", quality=90)
+    else:
+        pil_image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def _extract_native_text(pdf_path: Path) -> list[str]:
     reader = PdfReader(str(pdf_path))
     texts: list[str] = []
@@ -32,7 +52,9 @@ def _extract_native_text(pdf_path: Path) -> list[str]:
     return texts
 
 
-def _render_pages_to_png(pdf_path: Path, dpi: int) -> list[bytes]:
+def _render_pages_to_png(
+    pdf_path: Path, dpi: int, *, max_image_dim: int = 0, use_jpeg: bool = False,
+) -> list[bytes]:
     doc = pdfium.PdfDocument(str(pdf_path))
     scale = max(1, round(dpi / 72))
     images: list[bytes] = []
@@ -42,16 +64,23 @@ def _render_pages_to_png(pdf_path: Path, dpi: int) -> list[bytes]:
             page = doc[page_index]
             bitmap = page.render(scale=scale)
             pil_image = bitmap.to_pil()
-            buffer = BytesIO()
-            pil_image.save(buffer, format="PNG")
-            images.append(buffer.getvalue())
+            images.append(_encode_pil_image(
+                pil_image, max_image_dim=max_image_dim, use_jpeg=use_jpeg,
+            ))
     finally:
         doc.close()
 
     return images
 
 
-def render_selected_pages_to_png(pdf_path: Path, page_numbers: list[int], dpi: int = 180) -> dict[int, bytes]:
+def render_selected_pages_to_png(
+    pdf_path: Path,
+    page_numbers: list[int],
+    dpi: int = 180,
+    *,
+    max_image_dim: int = 0,
+    use_jpeg: bool = False,
+) -> dict[int, bytes]:
     if not page_numbers:
         return {}
 
@@ -72,9 +101,9 @@ def render_selected_pages_to_png(pdf_path: Path, page_numbers: list[int], dpi: i
             page = doc[page_index]
             bitmap = page.render(scale=scale)
             pil_image = bitmap.to_pil()
-            buffer = BytesIO()
-            pil_image.save(buffer, format="PNG")
-            images[page_number] = buffer.getvalue()
+            images[page_number] = _encode_pil_image(
+                pil_image, max_image_dim=max_image_dim, use_jpeg=use_jpeg,
+            )
     finally:
         doc.close()
 

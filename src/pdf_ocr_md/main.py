@@ -99,7 +99,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "and write one clean markdown file per PDF."
         ),
     )
-    parser.add_argument("--model", default="", help="Model name (leave empty for LM Studio default)")
+    parser.add_argument("--model", default="qwen3.5:9b", help="Model name (default: qwen3.5:9b)")
     parser.add_argument(
         "--llm-url",
         default="http://localhost:1234",
@@ -108,7 +108,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dpi",
         type=int,
-        default=180,
+        default=150,
         help="Render DPI for page images sent to vision model",
     )
     parser.add_argument(
@@ -168,6 +168,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Process only selected PDF filename(s) in current root (repeat flag for multiple)",
     )
     parser.add_argument(
+        "--max-image-dim",
+        type=int,
+        default=1536,
+        help="Cap longest image dimension before sending to LLM (0 = no cap)",
+    )
+    parser.add_argument(
         "--launch-if-offline",
         choices=["y", "n"],
         default="n",
@@ -194,10 +200,12 @@ def process_pdf(
     output_dir: Path | None,
     dry_run: bool,
     tui: OcrPipelineTui | None = None,
+    max_image_dim: int = 0,
+    prefetched_text_payloads: list[PageTextPayload] | None = None,
 ) -> ProcessResult | None:
     process_start = time.perf_counter()
     extraction_start = time.perf_counter()
-    text_payloads = extract_page_text_payloads(pdf_path)
+    text_payloads = prefetched_text_payloads or extract_page_text_payloads(pdf_path)
     extraction_seconds = time.perf_counter() - extraction_start
 
     if tui is not None:
@@ -385,11 +393,11 @@ def process_pdf(
                 needs_ocr_text_payloads.append(payload)
                 if tui is None:
                     print(f"  - Slide {payload.page_number}/{payload.total_pages} queued for OCR (diagram_keyword_detected)")
-            elif has_table_keyword(compact) and native_len < 450:
+            elif has_table_keyword(compact) and native_len < 350:
                 # slides with an actual grid/table image will be caught by
                 # has_visual_structure() in the visual check stage.
                 needs_visual_check.append(payload)
-            elif native_len >= 450:
+            elif native_len >= 350:
                 native_fast_path_pages.append((payload, "native_text_only"))
             else:
                 needs_visual_check.append(payload)
@@ -400,23 +408,14 @@ def process_pdf(
     # but ~4× cheaper than the full OCR render. Pages that skip OCR pay only
     # this cheap render cost; pages that need OCR get a full-quality re-render.
     route_dpi = max(90, dpi // 2)
-    # Cache of full-quality images built during route render so pages that go
-    # through visual check AND need OCR can be reused without a second render.
-    route_full_images: dict[int, bytes] = {}
 
     if needs_visual_check:
         route_render_start = time.perf_counter()
-        # If route_dpi equals ocr dpi (e.g. user set very low dpi), render once
-        # at full quality and reuse for OCR — avoids the duplicate render entirely.
-        use_full_for_route = route_dpi >= dpi
-        effective_route_dpi = dpi if use_full_for_route else route_dpi
         route_images = render_selected_pages_to_png(
             pdf_path=pdf_path,
             page_numbers=[payload.page_number for payload in needs_visual_check],
-            dpi=effective_route_dpi,
+            dpi=route_dpi,
         )
-        if use_full_for_route:
-            route_full_images = route_images
         render_for_route_seconds = time.perf_counter() - route_render_start
 
         for payload in needs_visual_check:
@@ -436,17 +435,14 @@ def process_pdf(
                 native_fast_path_pages.append((payload, reason))
 
     render_for_ocr_start = time.perf_counter()
-    # Pages already rendered at full quality during route phase can be reused.
-    pages_needing_fresh_render = [
-        payload for payload in needs_ocr_text_payloads
-        if payload.page_number not in route_full_images
-    ]
-    fresh_ocr_images = render_selected_pages_to_png(
+    # OCR renders use JPEG + resolution cap for smaller LLM payloads.
+    ocr_images = render_selected_pages_to_png(
         pdf_path=pdf_path,
-        page_numbers=[payload.page_number for payload in pages_needing_fresh_render],
+        page_numbers=[payload.page_number for payload in needs_ocr_text_payloads],
         dpi=dpi,
+        max_image_dim=max_image_dim,
+        use_jpeg=True,
     )
-    ocr_images = {**route_full_images, **fresh_ocr_images}
     render_for_ocr_seconds = time.perf_counter() - render_for_ocr_start if needs_ocr_text_payloads else 0.0
 
     needs_ocr: list[PagePayload] = []
@@ -709,7 +705,17 @@ def main(argv: list[str] | None = None) -> int:
         with OcrPipelineTui(enabled=(not args.no_tui and not args.dry_run)) as tui:
             tui.start_documents(len(pdf_files))
             tui.start_global_slides(0)
-            for pdf_file in pdf_files:
+            # Pipeline: pre-extract text payloads for the next PDF while
+            # the current one is processing (CPU extraction overlaps GPU OCR).
+            prefetch_executor = ThreadPoolExecutor(max_workers=1)
+            prefetched: dict[Path, list[PageTextPayload]] = {}
+            for idx, pdf_file in enumerate(pdf_files):
+                # Kick off prefetch for the next PDF (if any).
+                next_pdf = pdf_files[idx + 1] if idx + 1 < len(pdf_files) else None
+                prefetch_future = None
+                if next_pdf is not None:
+                    prefetch_future = prefetch_executor.submit(extract_page_text_payloads, next_pdf)
+
                 print(f"Processing: {pdf_file.name}")
                 try:
                     output = process_pdf(
@@ -724,6 +730,8 @@ def main(argv: list[str] | None = None) -> int:
                         output_dir=output_dir,
                         dry_run=args.dry_run,
                         tui=tui,
+                        max_image_dim=args.max_image_dim,
+                        prefetched_text_payloads=prefetched.pop(pdf_file, None),
                     )
                     if output is not None:
                         documents_succeeded += 1
@@ -737,6 +745,13 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  ! Failed {pdf_file.name}: {exc}", file=sys.stderr)
                 finally:
                     tui.finish_document()
+                    # Collect the prefetched result for the next iteration.
+                    if prefetch_future is not None and next_pdf is not None:
+                        try:
+                            prefetched[next_pdf] = prefetch_future.result()
+                        except Exception:
+                            pass  # Will fall back to extraction inside process_pdf
+            prefetch_executor.shutdown(wait=False)
     except LLMError as exc:
         print(f"LLM error: {exc}", file=sys.stderr)
         return 2

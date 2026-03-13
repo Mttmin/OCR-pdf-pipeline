@@ -27,15 +27,15 @@ QUALITY_PRESETS: list[QualityPreset] = [
     QualityPreset(
         key="1",
         label="Fast (selective OCR, lower image quality)",
-        dpi=140,
-        workers=3,
+        dpi=120,
+        workers=1,
         native_fast_path=True,
         skip_aggregate_cleanup=True,
     ),
     QualityPreset(
         key="2",
         label="Balanced (recommended)",
-        dpi=180,
+        dpi=150,
         workers=1,
         native_fast_path=True,
         skip_aggregate_cleanup=False,
@@ -43,7 +43,7 @@ QUALITY_PRESETS: list[QualityPreset] = [
     QualityPreset(
         key="3",
         label="High Quality (OCR every needed page with cleanup)",
-        dpi=220,
+        dpi=180,
         workers=1,
         native_fast_path=False,
         skip_aggregate_cleanup=False,
@@ -117,7 +117,7 @@ def _ask_pdf_selection(console: Console, pdfs: list[Path]) -> list[Path]:
 
 def _ask_model(console: Console, llm_url: str) -> str:
     discovered = _fetch_llm_models(llm_url)
-    default_model = ""
+    default_model = "qwen3.5:9b"
 
     if discovered:
         table = Table(title="Detected LM Studio Models")
